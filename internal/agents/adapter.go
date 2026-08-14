@@ -22,6 +22,13 @@ type FinalResponse struct {
 	CompletedAt time.Time
 }
 
+// StatusEvent reports a provider-neutral lifecycle change for an agent pane.
+// Err is set when the live event stream can no longer be read.
+type StatusEvent struct {
+	Status string
+	Err    error
+}
+
 // Adapter retrieves the latest completed final response for one agent family.
 type Adapter interface {
 	LatestFinal(context.Context, Session) (FinalResponse, error)

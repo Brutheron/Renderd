@@ -1,12 +1,15 @@
 package reader
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/Brutheron/Renderd/internal/agents"
 )
 
 func TestReaderRendersHeaderAndMarkdown(t *testing.T) {
@@ -107,5 +110,76 @@ func TestEscapeQuits(t *testing.T) {
 	_, command := model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if command == nil {
 		t.Fatal("Escape did not return a quit command")
+	}
+}
+
+func TestLiveStatusMovesFromWorkingToRefreshing(t *testing.T) {
+	events := make(chan agents.StatusEvent)
+	live := &LiveUpdates{
+		Context: context.Background(),
+		Events:  events,
+		Refresh: func(context.Context, string) (agents.FinalResponse, error) {
+			return agents.FinalResponse{Agent: "codex", TurnID: "turn-2", Markdown: "new"}, nil
+		},
+	}
+	model := NewLive(agents.FinalResponse{Agent: "codex", TurnID: "turn-1", Markdown: "old"}, live)
+
+	updated, next := model.Update(statusEventMsg{open: true, event: agents.StatusEvent{Status: "working"}})
+	model = updated.(Model)
+	if next == nil || model.liveLabel() != "WORKING…" {
+		t.Fatalf("working state = %q, command nil = %t", model.liveLabel(), next == nil)
+	}
+
+	updated, refresh := model.Update(statusEventMsg{open: true, event: agents.StatusEvent{Status: "done"}})
+	model = updated.(Model)
+	if refresh == nil || !model.refreshing || model.liveLabel() != "REFRESHING…" {
+		t.Fatalf("settled state = %q, refreshing = %t", model.liveLabel(), model.refreshing)
+	}
+}
+
+func TestNewLiveResponseReplacesDocumentAndResetsReaderState(t *testing.T) {
+	live := &LiveUpdates{Context: context.Background(), Events: make(chan agents.StatusEvent)}
+	model := NewLive(agents.FinalResponse{Agent: "codex", TurnID: "turn-1", Markdown: "old"}, live)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	model = updated.(Model)
+	model.copied = true
+
+	updated, _ = model.Update(refreshResultMsg{response: agents.FinalResponse{
+		Agent: "codex", TurnID: "turn-2", Markdown: "# Fresh response",
+	}})
+	model = updated.(Model)
+	if model.turnID != "turn-2" || model.markdown != "# Fresh response" {
+		t.Fatalf("document = turn %q, markdown %q", model.turnID, model.markdown)
+	}
+	if model.copied {
+		t.Fatal("new response retained stale copy confirmation")
+	}
+	if model.viewport.YOffset() != 0 {
+		t.Fatalf("new response offset = %d, want top", model.viewport.YOffset())
+	}
+	if model.liveLabel() != "UPDATED" {
+		t.Fatalf("live label = %q, want UPDATED", model.liveLabel())
+	}
+}
+
+func TestManualRefreshWorksWhenLiveEventsAreOffline(t *testing.T) {
+	live := &LiveUpdates{
+		ConnectionError: fmt.Errorf("socket unavailable"),
+		Context:         context.Background(),
+		Refresh: func(_ context.Context, currentTurnID string) (agents.FinalResponse, error) {
+			if currentTurnID != "turn-1" {
+				t.Fatalf("current turn ID = %q", currentTurnID)
+			}
+			return agents.FinalResponse{Agent: "codex", TurnID: "turn-2", Markdown: "new"}, nil
+		},
+	}
+	model := NewLive(agents.FinalResponse{Agent: "codex", TurnID: "turn-1", Markdown: "old"}, live)
+	updated, command := model.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if command == nil || !updated.(Model).refreshing {
+		t.Fatal("manual refresh did not start")
+	}
+	result, ok := command().(refreshResultMsg)
+	if !ok || result.err != nil || result.response.TurnID != "turn-2" {
+		t.Fatalf("refresh result = %#v", result)
 	}
 }

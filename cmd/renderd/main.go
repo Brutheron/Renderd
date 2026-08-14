@@ -22,6 +22,14 @@ const (
 	requestTimeout = 10 * time.Second
 )
 
+var refreshRetryDelays = []time.Duration{
+	0,
+	100 * time.Millisecond,
+	250 * time.Millisecond,
+	500 * time.Millisecond,
+	1 * time.Second,
+}
+
 func main() {
 	if len(os.Args) != 2 {
 		fatal("usage: renderd <open|reader>")
@@ -90,18 +98,50 @@ func runReader() error {
 		), "renderd")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-	defer cancel()
+	herdrClient := herdr.Client{Binary: envOr("HERDR_BIN_PATH", "herdr")}
+	codexClient := codex.Client{Binary: envOr("RENDERD_CODEX_BIN", "codex")}
 
-	pane, err := (herdr.Client{Binary: envOr("HERDR_BIN_PATH", "herdr")}).GetPane(ctx, paneID)
+	initialContext, cancelInitial := context.WithTimeout(context.Background(), requestTimeout)
+	response, err := latestCodexForPane(initialContext, herdrClient, codexClient, paneID)
+	cancelInitial()
 	if err != nil {
-		return reader.Run(errorDocument("Could not inspect the Herdr pane", err.Error()), "renderd")
+		if errors.Is(err, codex.ErrNoFinalResponse) {
+			response = agents.FinalResponse{Agent: "codex", Markdown: errorDocument(
+				"No completed final response yet",
+				"Leave Renderd open. The reader will update when Codex finishes its current turn.",
+			)}
+		} else {
+			response = agents.FinalResponse{Agent: "codex", Markdown: errorDocument("Could not read the Codex response", err.Error())}
+		}
+	}
+
+	liveContext, cancelLive := context.WithCancel(context.Background())
+	defer cancelLive()
+
+	events, subscribeErr := herdrClient.SubscribeAgentStatus(liveContext, paneID)
+	live := reader.LiveUpdates{
+		ConnectionError: subscribeErr,
+		Context:         liveContext,
+		Events:          events,
+		Refresh: func(ctx context.Context, currentTurnID string) (agents.FinalResponse, error) {
+			return refreshLatestCodex(ctx, herdrClient, codexClient, paneID, currentTurnID)
+		},
+	}
+	return reader.RunLive(response, live)
+}
+
+func latestCodexForPane(
+	ctx context.Context,
+	herdrClient herdr.Client,
+	codexClient codex.Client,
+	paneID string,
+) (agents.FinalResponse, error) {
+	pane, err := herdrClient.GetPane(ctx, paneID)
+	if err != nil {
+		return agents.FinalResponse{}, err
 	}
 	if pane.AgentSession == nil || pane.AgentSession.Agent != "codex" || pane.AgentSession.Value == "" {
-		return reader.Run(errorDocument(
-			"Codex session identity unavailable",
-			"Install Herdr's Codex integration with `herdr integration install codex`, restart Codex, and try again.",
-		), "codex")
+		return agents.FinalResponse{}, errors.New("Codex session identity unavailable; install Herdr's Codex integration with `herdr integration install codex` and restart Codex")
 	}
 
 	session := agents.Session{
@@ -110,18 +150,47 @@ func runReader() error {
 		Source: pane.AgentSession.Source,
 		Value:  pane.AgentSession.Value,
 	}
-	response, err := (codex.Client{Binary: envOr("RENDERD_CODEX_BIN", "codex")}).LatestFinal(ctx, session)
-	if err != nil {
-		if errors.Is(err, codex.ErrNoFinalResponse) {
-			return reader.Run(errorDocument(
-				"No completed final response yet",
-				"Let Codex finish its current turn, then open Renderd again.",
-			), "codex")
-		}
-		return reader.Run(errorDocument("Could not read the Codex response", err.Error()), "codex")
-	}
+	return codexClient.LatestFinal(ctx, session)
+}
 
-	return reader.Run(response.Markdown, response.Agent)
+func refreshLatestCodex(
+	ctx context.Context,
+	herdrClient herdr.Client,
+	codexClient codex.Client,
+	paneID string,
+	currentTurnID string,
+) (agents.FinalResponse, error) {
+	var latest agents.FinalResponse
+	var lastErr error
+	for _, delay := range refreshRetryDelays {
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return agents.FinalResponse{}, ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		response, err := latestCodexForPane(ctx, herdrClient, codexClient, paneID)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		latest = response
+		lastErr = nil
+		if currentTurnID == "" || response.TurnID != currentTurnID {
+			return response, nil
+		}
+	}
+	if latest.Markdown != "" {
+		return latest, nil
+	}
+	if lastErr == nil {
+		lastErr = codex.ErrNoFinalResponse
+	}
+	return agents.FinalResponse{}, lastErr
 }
 
 func errorDocument(title, detail string) string {

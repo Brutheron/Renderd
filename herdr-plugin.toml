@@ -1,6 +1,6 @@
 id = "brutheron.renderd"
 name = "Renderd"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.8.0"
 description = "Reader mode for the latest final response from terminal AI agents"
 platforms = ["macos", "linux"]
