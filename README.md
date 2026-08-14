@@ -2,17 +2,19 @@
 
 Renderd is a reader mode for final responses from AI agents running inside
 [Herdr](https://herdr.dev/). The first release targets Codex and renders the
-latest completed final response as a focused, scrollable Markdown document.
+latest completed final response as a focused, scrollable Markdown side panel.
 
 ## MVP workflow
 
 1. Focus a Herdr pane running Codex.
 2. Press `prefix+m`.
-3. Read the latest completed Codex final response.
-4. Press `esc` to return to the untouched Codex terminal.
+3. Read the latest completed Codex final response in the right-side panel.
+4. Press `c` or click **Copy response** to copy the complete Markdown response.
+5. Press `esc` to close the panel and return to the untouched Codex terminal.
 
 Renderd reads structured Codex thread data through `codex app-server`. It does
-not parse terminal output, send keys to Codex, or read the clipboard.
+not parse terminal output or send keys to Codex. Clipboard writes use OSC 52,
+which Herdr forwards to the host clipboard.
 
 ## Development
 

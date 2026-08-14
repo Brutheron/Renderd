@@ -1,6 +1,6 @@
 id = "brutheron.renderd"
 name = "Renderd"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.8.0"
 description = "Reader mode for the latest final response from terminal AI agents"
 platforms = ["macos", "linux"]
@@ -17,7 +17,5 @@ command = ["bin/renderd", "open"]
 [[panes]]
 id = "reader"
 title = "Final response"
-placement = "popup"
-width = "90%"
-height = "90%"
+placement = "split"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/renderd\" reader"]

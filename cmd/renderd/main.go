@@ -73,6 +73,9 @@ func readerCommand(herdrBinary, activePluginID, paneID string) *exec.Cmd {
 		"plugin", "pane", "open",
 		"--plugin", activePluginID,
 		"--entrypoint", "reader",
+		"--placement", "split",
+		"--direction", "right",
+		"--target-pane", paneID,
 		"--focus",
 		"--env", sourcePaneEnv+"="+paneID,
 	)
