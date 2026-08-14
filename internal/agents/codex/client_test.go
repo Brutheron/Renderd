@@ -67,7 +67,7 @@ func TestSelectLatestFinalReturnsNotFound(t *testing.T) {
 	}}}
 
 	_, err := selectLatestFinal(value, agents.Session{Agent: "codex", Value: "session-1"})
-	if !errors.Is(err, ErrNoFinalResponse) {
+	if !errors.Is(err, agents.ErrNoFinalResponse) {
 		t.Fatalf("error = %v, want ErrNoFinalResponse", err)
 	}
 }

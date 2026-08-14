@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Brutheron/Renderd/internal/agents"
+	"github.com/Brutheron/Renderd/internal/agents/claude"
 	"github.com/Brutheron/Renderd/internal/agents/codex"
 	"github.com/Brutheron/Renderd/internal/herdr"
 	"github.com/Brutheron/Renderd/internal/reader"
@@ -99,19 +100,26 @@ func runReader() error {
 	}
 
 	herdrClient := herdr.Client{Binary: envOr("HERDR_BIN_PATH", "herdr")}
-	codexClient := codex.Client{Binary: envOr("RENDERD_CODEX_BIN", "codex")}
+	registry := agents.Registry{
+		"claude": claude.Client{ConfigDir: os.Getenv("RENDERD_CLAUDE_CONFIG_DIR")},
+		"codex":  codex.Client{Binary: envOr("RENDERD_CODEX_BIN", "codex")},
+	}
 
 	initialContext, cancelInitial := context.WithTimeout(context.Background(), requestTimeout)
-	response, err := latestCodexForPane(initialContext, herdrClient, codexClient, paneID)
+	session, response, err := latestFinalForPane(initialContext, herdrClient, registry, paneID)
 	cancelInitial()
 	if err != nil {
-		if errors.Is(err, codex.ErrNoFinalResponse) {
-			response = agents.FinalResponse{Agent: "codex", Markdown: errorDocument(
+		agent := session.Agent
+		if agent == "" {
+			agent = "renderd"
+		}
+		if errors.Is(err, agents.ErrNoFinalResponse) {
+			response = agents.FinalResponse{Agent: agent, Markdown: errorDocument(
 				"No completed final response yet",
-				"Leave Renderd open. The reader will update when Codex finishes its current turn.",
+				fmt.Sprintf("Leave Renderd open. The reader will update when %s finishes its current turn.", displayName(session.Agent)),
 			)}
 		} else {
-			response = agents.FinalResponse{Agent: "codex", Markdown: errorDocument("Could not read the Codex response", err.Error())}
+			response = agents.FinalResponse{Agent: agent, Markdown: errorDocument("Could not read the agent response", err.Error())}
 		}
 	}
 
@@ -124,24 +132,30 @@ func runReader() error {
 		Context:         liveContext,
 		Events:          events,
 		Refresh: func(ctx context.Context, currentTurnID string) (agents.FinalResponse, error) {
-			return refreshLatestCodex(ctx, herdrClient, codexClient, paneID, currentTurnID)
+			return refreshLatestFinal(ctx, herdrClient, registry, paneID, currentTurnID)
 		},
 	}
 	return reader.RunLive(response, live)
 }
 
-func latestCodexForPane(
+// latestFinalForPane resolves the pane's native agent session and reads its
+// latest completed response. The session is returned alongside the error so
+// callers can label a failure with the agent it came from.
+func latestFinalForPane(
 	ctx context.Context,
 	herdrClient herdr.Client,
-	codexClient codex.Client,
+	registry agents.Registry,
 	paneID string,
-) (agents.FinalResponse, error) {
+) (agents.Session, agents.FinalResponse, error) {
 	pane, err := herdrClient.GetPane(ctx, paneID)
 	if err != nil {
-		return agents.FinalResponse{}, err
+		return agents.Session{}, agents.FinalResponse{}, err
 	}
-	if pane.AgentSession == nil || pane.AgentSession.Agent != "codex" || pane.AgentSession.Value == "" {
-		return agents.FinalResponse{}, errors.New("Codex session identity unavailable; install Herdr's Codex integration with `herdr integration install codex` and restart Codex")
+	if pane.AgentSession == nil || pane.AgentSession.Agent == "" || pane.AgentSession.Value == "" {
+		return agents.Session{}, agents.FinalResponse{}, fmt.Errorf(
+			"agent session identity unavailable; install Herdr's session integration with `herdr integration install %s` and restart the agent",
+			integrationName(pane.Agent),
+		)
 	}
 
 	session := agents.Session{
@@ -150,13 +164,14 @@ func latestCodexForPane(
 		Source: pane.AgentSession.Source,
 		Value:  pane.AgentSession.Value,
 	}
-	return codexClient.LatestFinal(ctx, session)
+	response, err := registry.LatestFinal(ctx, session)
+	return session, response, err
 }
 
-func refreshLatestCodex(
+func refreshLatestFinal(
 	ctx context.Context,
 	herdrClient herdr.Client,
-	codexClient codex.Client,
+	registry agents.Registry,
 	paneID string,
 	currentTurnID string,
 ) (agents.FinalResponse, error) {
@@ -173,7 +188,7 @@ func refreshLatestCodex(
 			}
 		}
 
-		response, err := latestCodexForPane(ctx, herdrClient, codexClient, paneID)
+		_, response, err := latestFinalForPane(ctx, herdrClient, registry, paneID)
 		if err != nil {
 			lastErr = err
 			continue
@@ -188,9 +203,26 @@ func refreshLatestCodex(
 		return latest, nil
 	}
 	if lastErr == nil {
-		lastErr = codex.ErrNoFinalResponse
+		lastErr = agents.ErrNoFinalResponse
 	}
 	return agents.FinalResponse{}, lastErr
+}
+
+// integrationName is the `herdr integration install` argument for the agent
+// Herdr detected in the pane, falling back to a readable placeholder.
+func integrationName(agent string) string {
+	if agent == "" {
+		return "<agent>"
+	}
+	return agent
+}
+
+// displayName titles an agent name for prose shown in the reader.
+func displayName(agent string) string {
+	if agent == "" {
+		return "the agent"
+	}
+	return strings.ToUpper(agent[:1]) + agent[1:]
 }
 
 func errorDocument(title, detail string) string {

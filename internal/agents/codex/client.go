@@ -12,8 +12,6 @@ import (
 	"github.com/Brutheron/Renderd/internal/agents"
 )
 
-var ErrNoFinalResponse = errors.New("no completed final response is available")
-
 // Client reads persisted Codex threads through the documented App Server
 // protocol. It never attaches to or sends input to the interactive Codex TUI.
 type Client struct {
@@ -174,7 +172,7 @@ func selectLatestFinal(value thread, session agents.Session) (agents.FinalRespon
 		}
 	}
 
-	return agents.FinalResponse{}, ErrNoFinalResponse
+	return agents.FinalResponse{}, agents.ErrNoFinalResponse
 }
 
 func stopProcess(cmd *exec.Cmd, stdin io.Closer) {
