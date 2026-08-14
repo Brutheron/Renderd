@@ -1,10 +1,11 @@
 # Renderd
 
-Renderd is a reader mode for final responses from AI agents running inside
-[Herdr](https://herdr.dev/). The first release targets Codex and renders the
-latest completed final response as a focused, scrollable Markdown side panel.
+Renderd is a live-updating Markdown reader for final responses from AI agents
+running inside [Herdr](https://herdr.dev/). It opens the latest completed
+response in a focused, scrollable side panel and follows new responses without
+interfering with the agent's terminal session.
 
-## MVP workflow
+## How it works
 
 1. Focus a Herdr pane running Codex.
 2. Press `prefix+m`.
