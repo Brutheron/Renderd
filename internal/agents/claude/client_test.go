@@ -11,8 +11,8 @@ import (
 	"github.com/Brutheron/Renderd/internal/agents"
 )
 
-// transcript lines mirror the records Claude Code appends while a session runs:
-// one line per content block, several lines sharing one request ID per turn.
+// Transcript lines mirror the records Claude Code appends while a session runs;
+// several assistant records can share one request ID for the same turn.
 const (
 	userPrompt      = `{"type":"user","sessionId":"session-1","message":{"role":"user","content":"summarise this"}}`
 	toolResult      = `{"type":"user","sessionId":"session-1","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}`

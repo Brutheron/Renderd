@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,8 +70,8 @@ func New(markdown, agent string) Model {
 // agent while remaining fully usable if the live stream is unavailable.
 func NewLive(response agents.FinalResponse, live *LiveUpdates) Model {
 	model := Model{
-		agent:    strings.ToUpper(response.Agent),
-		markdown: response.Markdown,
+		agent:    strings.ToUpper(sanitizeTerminalText(response.Agent)),
+		markdown: sanitizeTerminalText(response.Markdown),
 		turnID:   response.TurnID,
 		viewport: viewport.New(viewport.WithWidth(80), viewport.WithHeight(20)),
 	}
@@ -139,8 +140,8 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = ""
 			return m, nil
 		}
-		m.agent = strings.ToUpper(message.response.Agent)
-		m.markdown = message.response.Markdown
+		m.agent = strings.ToUpper(sanitizeTerminalText(message.response.Agent))
+		m.markdown = sanitizeTerminalText(message.response.Markdown)
 		m.turnID = message.response.TurnID
 		m.copied = false
 		m.notice = "UPDATED"
@@ -340,6 +341,81 @@ func renderStyle(readingWidth int) ansi.StyleConfig {
 
 func pointer[T any](value T) *T {
 	return &value
+}
+
+// sanitizeTerminalText is the trust boundary between agent-controlled text and
+// the terminal renderer. Newlines and tabs are valid Markdown whitespace; all
+// other C0/C1 controls are removed before Glamour adds its own trusted styling.
+func sanitizeTerminalText(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = neutralizeTerminalControlReferences(value)
+	return strings.Map(func(character rune) rune {
+		switch character {
+		case '\n', '\t':
+			return character
+		case '\r':
+			return '\n'
+		}
+		if isUnsafeTerminalControl(character) {
+			return -1
+		}
+		return character
+	}, value)
+}
+
+// neutralizeTerminalControlReferences prevents the Markdown renderer from
+// recreating a stripped control through numeric entities such as &#27;.
+func neutralizeTerminalControlReferences(value string) string {
+	var sanitized strings.Builder
+	last := 0
+
+	for index := 0; index+3 < len(value); index++ {
+		if value[index] != '&' || value[index+1] != '#' {
+			continue
+		}
+
+		base := 10
+		digits := index + 2
+		if value[digits] == 'x' || value[digits] == 'X' {
+			base = 16
+			digits++
+		}
+		end := digits
+		for end < len(value) && numericEntityDigit(value[end], base) {
+			end++
+		}
+		if end == digits || end >= len(value) || value[end] != ';' {
+			continue
+		}
+
+		codepoint, err := strconv.ParseUint(value[digits:end], base, 32)
+		if err != nil || !isUnsafeTerminalControl(rune(codepoint)) {
+			continue
+		}
+
+		sanitized.WriteString(value[last:index])
+		sanitized.WriteRune('\uFFFD')
+		last = end + 1
+		index = end
+	}
+
+	if last == 0 {
+		return value
+	}
+	sanitized.WriteString(value[last:])
+	return sanitized.String()
+}
+
+func numericEntityDigit(character byte, base int) bool {
+	if character >= '0' && character <= '9' {
+		return true
+	}
+	return base == 16 && (character >= 'a' && character <= 'f' || character >= 'A' && character <= 'F')
+}
+
+func isUnsafeTerminalControl(character rune) bool {
+	return character != '\n' && character != '\t' &&
+		(character < 0x20 || character >= 0x7f && character <= 0x9f)
 }
 
 func waitForStatusEvent(live *LiveUpdates) tea.Cmd {

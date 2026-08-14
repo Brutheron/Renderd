@@ -95,6 +95,93 @@ func TestCopyButtonClickCopiesWholeMarkdown(t *testing.T) {
 	}
 }
 
+func TestReaderNeutralizesAgentTerminalControls(t *testing.T) {
+	tests := []struct {
+		name     string
+		markdown string
+		marker   string
+	}{
+		{name: "OSC 52 clipboard", markdown: "before \x1b]52;c;c2VjcmV0\x07 after", marker: "\x1b]52;"},
+		{name: "OSC 8 hyperlink", markdown: "\x1b]8;;https://example.invalid\x1b\\label\x1b]8;;\x1b\\", marker: "\x1b]8;"},
+		{name: "CSI clear screen", markdown: "before \x1b[2J after", marker: "\x1b[2J"},
+		{name: "DCS", markdown: "before \x1bPpayload\x1b\\ after", marker: "\x1bP"},
+		{name: "8-bit CSI", markdown: "before \u009b2J after", marker: "\u009b"},
+		{name: "8-bit OSC", markdown: "before \u009d52;c;c2VjcmV0\u009c after", marker: "\u009d"},
+		{name: "unterminated OSC", markdown: "before \x1b]52;c;c2VjcmV0", marker: "\x1b]52;"},
+		{name: "remaining C0 controls", markdown: "before\x00\x07\x08\x0b\x0c\x7fafter", marker: "\x07"},
+		{name: "decimal entity OSC", markdown: "before &#27;]52;c;c2VjcmV0&#7; after", marker: "\x1b]52;"},
+		{name: "hex entity OSC", markdown: "before &#x1b;]52;c;c2VjcmV0&#x07; after", marker: "\x1b]52;"},
+		{name: "decimal entity 8-bit CSI", markdown: "before &#155;2J after", marker: "\u009b"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			model := New(test.markdown, "codex")
+			assertNoUnsafeTerminalControls(t, model.markdown)
+
+			updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+			view := updated.(Model).View().Content
+			if strings.Contains(view, test.marker) {
+				t.Fatalf("View() retained attacker terminal sequence %q", test.marker)
+			}
+		})
+	}
+}
+
+func TestReaderSanitizationPreservesMarkdownAndSafeCopy(t *testing.T) {
+	markdown := "# Result\r\n\r\nline one\rline two &amp; more\tend\x1b]52;c;c2VjcmV0\x07"
+	model := New(markdown, "co\x1b]2;spoofed\x07dex")
+
+	if model.markdown != "# Result\n\nline one\nline two &amp; more\tend]52;c;c2VjcmV0" {
+		t.Fatalf("sanitized Markdown = %q", model.markdown)
+	}
+	if model.agent != "CO]2;SPOOFEDDEX" {
+		t.Fatalf("sanitized agent label = %q", model.agent)
+	}
+
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	model = updated.(Model)
+	if !strings.Contains(model.rendered, "\x1b[") {
+		t.Fatal("sanitization removed renderer-generated ANSI styling")
+	}
+
+	_, command := model.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	if command == nil {
+		t.Fatal("copy key did not return a clipboard command")
+	}
+	if copied := fmt.Sprint(command()); copied != model.markdown {
+		t.Fatalf("clipboard content = %q, want sanitized Markdown %q", copied, model.markdown)
+	}
+}
+
+func TestLiveRefreshNeutralizesTerminalControls(t *testing.T) {
+	model := NewLive(agents.FinalResponse{Agent: "codex", TurnID: "turn-1", Markdown: "old"}, nil)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	model = updated.(Model)
+
+	updated, _ = model.Update(refreshResultMsg{response: agents.FinalResponse{
+		Agent: "claude", TurnID: "turn-2", Markdown: "new &#x1b;]52;c;c2VjcmV0&#7; response",
+	}})
+	model = updated.(Model)
+
+	assertNoUnsafeTerminalControls(t, model.markdown)
+	if strings.Contains(model.View().Content, "\x1b]52;") {
+		t.Fatal("live refresh retained an OSC 52 sequence")
+	}
+}
+
+func assertNoUnsafeTerminalControls(t *testing.T, value string) {
+	t.Helper()
+	for _, character := range value {
+		if character == '\n' || character == '\t' {
+			continue
+		}
+		if character < 0x20 || character >= 0x7f && character <= 0x9f {
+			t.Fatalf("value retained unsafe terminal control U+%04X", character)
+		}
+	}
+}
+
 func TestFooterStaysOnOneLineInSidePanel(t *testing.T) {
 	model := New("done", "codex")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 48, Height: 20})

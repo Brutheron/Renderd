@@ -87,7 +87,7 @@ func (c Client) LatestFinal(ctx context.Context, session agents.Session) (agents
 			"clientInfo": map[string]string{
 				"name":    "renderd",
 				"title":   "Renderd",
-				"version": "0.1.0",
+				"version": "0.4.0",
 			},
 		},
 	}); err != nil {

@@ -71,9 +71,9 @@ type entry struct {
 	turnID    string
 }
 
-// group accumulates the text of one completed turn. Claude Code writes one
-// record per content block, so a single turn spans several consecutive records
-// that share a request ID: thinking and tool calls land beside the answer.
+// group accumulates the text of one completed turn. Claude Code can write
+// several assistant records with the same request ID, so thinking, tool calls,
+// and the final text may arrive as separate records for one turn.
 type group struct {
 	key       string
 	sessionID string
