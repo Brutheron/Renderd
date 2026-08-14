@@ -1,7 +1,7 @@
 # Renderd
 
 Renderd is a live-updating Markdown reader for completed Claude Code and Codex
-responses inside [Herdr](https://herdr.dev/). It opens the latest response in a
+responses inside [Herdr](https://herdr.dev/). It opens session history in a
 focused, scrollable side panel and follows new responses without interfering
 with the agent's terminal session.
 
@@ -9,11 +9,14 @@ with the agent's terminal session.
 
 1. Focus a Herdr pane running Claude Code or Codex.
 2. Press `prefix+m`.
-3. Return focus to the agent pane and continue the conversation. Renderd stays
-   open and updates when each new response completes.
-4. Press `c` or click **Copy response** to copy the complete Markdown response.
-5. Press `r` to refresh manually if the live event connection is unavailable.
-6. Focus Renderd and press `esc` when you want to close the panel.
+3. Use `←`/`[` for older responses and `→`/`]` for newer responses. The header
+   shows your current position in the session history.
+4. Return focus to the agent pane and continue the conversation. Renderd stays
+   open and adds each new completed response without interrupting history you
+   are reading.
+5. Press `c` or click **Copy response** to copy the selected Markdown response.
+6. Press `r` to refresh manually if the live event connection is unavailable.
+7. Focus Renderd and press `esc` when you want to close the panel.
 
 ## Supported agents
 
@@ -35,15 +38,17 @@ only a session ID, Renderd looks under
 directories, the newest matching transcript is used.
 
 For Codex, Renderd starts a short-lived `codex app-server`, reads the identified
-thread with `includeTurns`, selects its newest completed `final_answer`, and
+thread with `includeTurns`, collects its completed `final_answer` items, and
 then stops the App Server process. It does not attach to the interactive Codex
 TUI.
 
 Live updates use Herdr's local socket event stream. While the agent is working,
-the previous response remains visible. When the source pane reaches `done` or
-`idle`, Renderd reads the latest completed turn, compares its turn ID, and
-rerenders only when a new final response is available. If the event stream
-drops, the document remains readable and the `r` fallback continues to work.
+the selected response remains visible. When the source pane reaches `done` or
+`idle`, Renderd reads the latest completed turn, compares its turn ID, and adds
+it to the local history only when it is new. If you are reading an older
+response, Renderd shows `NEW RESPONSE` without moving you away from it. If the
+event stream drops, the document remains readable and the `r` fallback
+continues to work.
 
 ### Reading a Claude Code transcript
 
@@ -99,7 +104,7 @@ Add the reader keybinding to `~/.config/herdr/config.toml`:
 key = "prefix+m"
 type = "plugin_action"
 command = "brutheron.renderd.open"
-description = "open latest final response"
+description = "open response history"
 ```
 
 Then reload Herdr's configuration:

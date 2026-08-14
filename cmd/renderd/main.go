@@ -106,7 +106,7 @@ func runReader() error {
 	}
 
 	initialContext, cancelInitial := context.WithTimeout(context.Background(), requestTimeout)
-	session, response, err := latestFinalForPane(initialContext, herdrClient, registry, paneID)
+	session, responses, err := finalResponsesForPane(initialContext, herdrClient, registry, paneID)
 	cancelInitial()
 	if err != nil {
 		agent := session.Agent
@@ -114,12 +114,12 @@ func runReader() error {
 			agent = "renderd"
 		}
 		if errors.Is(err, agents.ErrNoFinalResponse) {
-			response = agents.FinalResponse{Agent: agent, Markdown: errorDocument(
+			responses = []agents.FinalResponse{{Agent: agent, Markdown: errorDocument(
 				"No completed final response yet",
 				fmt.Sprintf("Leave Renderd open. The reader will update when %s finishes its current turn.", displayName(session.Agent)),
-			)}
+			)}}
 		} else {
-			response = agents.FinalResponse{Agent: agent, Markdown: errorDocument("Could not read the agent response", err.Error())}
+			responses = []agents.FinalResponse{{Agent: agent, Markdown: errorDocument("Could not read the agent response", err.Error())}}
 		}
 	}
 
@@ -135,24 +135,24 @@ func runReader() error {
 			return refreshLatestFinal(ctx, herdrClient, registry, paneID, currentTurnID)
 		},
 	}
-	return reader.RunLive(response, live)
+	return reader.RunHistory(responses, live)
 }
 
-// latestFinalForPane resolves the pane's native agent session and reads its
-// latest completed response. The session is returned alongside the error so
+// finalResponsesForPane resolves the pane's native agent session and reads its
+// completed response history. The session is returned alongside the error so
 // callers can label a failure with the agent it came from.
-func latestFinalForPane(
+func finalResponsesForPane(
 	ctx context.Context,
 	herdrClient herdr.Client,
 	registry agents.Registry,
 	paneID string,
-) (agents.Session, agents.FinalResponse, error) {
+) (agents.Session, []agents.FinalResponse, error) {
 	pane, err := herdrClient.GetPane(ctx, paneID)
 	if err != nil {
-		return agents.Session{}, agents.FinalResponse{}, err
+		return agents.Session{}, nil, err
 	}
 	if pane.AgentSession == nil || pane.AgentSession.Agent == "" || pane.AgentSession.Value == "" {
-		return agents.Session{}, agents.FinalResponse{}, fmt.Errorf(
+		return agents.Session{}, nil, fmt.Errorf(
 			"agent session identity unavailable; install Herdr's session integration with `herdr integration install %s` and restart the agent",
 			integrationName(pane.Agent),
 		)
@@ -164,8 +164,21 @@ func latestFinalForPane(
 		Source: pane.AgentSession.Source,
 		Value:  pane.AgentSession.Value,
 	}
-	response, err := registry.LatestFinal(ctx, session)
-	return session, response, err
+	responses, err := registry.FinalResponses(ctx, session)
+	return session, responses, err
+}
+
+func latestFinalForPane(
+	ctx context.Context,
+	herdrClient herdr.Client,
+	registry agents.Registry,
+	paneID string,
+) (agents.Session, agents.FinalResponse, error) {
+	session, responses, err := finalResponsesForPane(ctx, herdrClient, registry, paneID)
+	if err != nil {
+		return session, agents.FinalResponse{}, err
+	}
+	return session, responses[len(responses)-1], nil
 }
 
 func refreshLatestFinal(

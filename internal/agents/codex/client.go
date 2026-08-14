@@ -52,10 +52,10 @@ type item struct {
 	Type  string `json:"type"`
 }
 
-// LatestFinal implements agents.Adapter for Codex sessions.
-func (c Client) LatestFinal(ctx context.Context, session agents.Session) (agents.FinalResponse, error) {
+// FinalResponses implements agents.Adapter for Codex sessions.
+func (c Client) FinalResponses(ctx context.Context, session agents.Session) ([]agents.FinalResponse, error) {
 	if session.Agent != "codex" || session.Value == "" {
-		return agents.FinalResponse{}, fmt.Errorf("invalid Codex session")
+		return nil, fmt.Errorf("invalid Codex session")
 	}
 
 	binary := c.Binary
@@ -66,14 +66,14 @@ func (c Client) LatestFinal(ctx context.Context, session agents.Session) (agents
 	cmd := exec.CommandContext(ctx, binary, "app-server")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("open Codex App Server stdin: %w", err)
+		return nil, fmt.Errorf("open Codex App Server stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("open Codex App Server stdout: %w", err)
+		return nil, fmt.Errorf("open Codex App Server stdout: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("start Codex App Server: %w", err)
+		return nil, fmt.Errorf("start Codex App Server: %w", err)
 	}
 	defer stopProcess(cmd, stdin)
 
@@ -91,14 +91,14 @@ func (c Client) LatestFinal(ctx context.Context, session agents.Session) (agents
 			},
 		},
 	}); err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("initialize Codex App Server: %w", err)
+		return nil, fmt.Errorf("initialize Codex App Server: %w", err)
 	}
 	if _, err := readRPCResult(decoder, 0); err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("initialize Codex App Server: %w", err)
+		return nil, fmt.Errorf("initialize Codex App Server: %w", err)
 	}
 
 	if err := encoder.Encode(map[string]any{"method": "initialized", "params": map[string]any{}}); err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("acknowledge Codex App Server: %w", err)
+		return nil, fmt.Errorf("acknowledge Codex App Server: %w", err)
 	}
 	if err := encoder.Encode(map[string]any{
 		"id":     1,
@@ -108,19 +108,28 @@ func (c Client) LatestFinal(ctx context.Context, session agents.Session) (agents
 			"threadId":     session.Value,
 		},
 	}); err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("request Codex thread: %w", err)
+		return nil, fmt.Errorf("request Codex thread: %w", err)
 	}
 
 	raw, err := readRPCResult(decoder, 1)
 	if err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("read Codex thread: %w", err)
+		return nil, fmt.Errorf("read Codex thread: %w", err)
 	}
 	var result threadReadResult
 	if err := json.Unmarshal(raw, &result); err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("decode Codex thread: %w", err)
+		return nil, fmt.Errorf("decode Codex thread: %w", err)
 	}
 
-	return selectLatestFinal(result.Thread, session)
+	return selectFinalResponses(result.Thread, session)
+}
+
+// LatestFinal keeps the direct client API convenient for live diagnostics.
+func (c Client) LatestFinal(ctx context.Context, session agents.Session) (agents.FinalResponse, error) {
+	responses, err := c.FinalResponses(ctx, session)
+	if err != nil {
+		return agents.FinalResponse{}, err
+	}
+	return responses[len(responses)-1], nil
 }
 
 func readRPCResult(decoder *json.Decoder, wantedID int) (json.RawMessage, error) {
@@ -148,8 +157,16 @@ func readRPCResult(decoder *json.Decoder, wantedID int) (json.RawMessage, error)
 }
 
 func selectLatestFinal(value thread, session agents.Session) (agents.FinalResponse, error) {
-	for turnIndex := len(value.Turns) - 1; turnIndex >= 0; turnIndex-- {
-		candidate := value.Turns[turnIndex]
+	responses, err := selectFinalResponses(value, session)
+	if err != nil {
+		return agents.FinalResponse{}, err
+	}
+	return responses[len(responses)-1], nil
+}
+
+func selectFinalResponses(value thread, session agents.Session) ([]agents.FinalResponse, error) {
+	responses := make([]agents.FinalResponse, 0, len(value.Turns))
+	for _, candidate := range value.Turns {
 		if candidate.Status != "completed" {
 			continue
 		}
@@ -168,11 +185,15 @@ func selectLatestFinal(value thread, session agents.Session) (agents.FinalRespon
 			if candidate.CompletedAt != nil {
 				response.CompletedAt = time.Unix(*candidate.CompletedAt, 0)
 			}
-			return response, nil
+			responses = append(responses, response)
+			break
 		}
 	}
 
-	return agents.FinalResponse{}, agents.ErrNoFinalResponse
+	if len(responses) == 0 {
+		return nil, agents.ErrNoFinalResponse
+	}
+	return responses, nil
 }
 
 func stopProcess(cmd *exec.Cmd, stdin io.Closer) {

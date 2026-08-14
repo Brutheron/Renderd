@@ -59,6 +59,28 @@ func TestSelectLatestFinalChoosesNewestCompletedTurn(t *testing.T) {
 	}
 }
 
+func TestSelectFinalResponsesReturnsCompletedTurnsInOrder(t *testing.T) {
+	value := thread{Turns: []turn{
+		{ID: "one", Status: "completed", Items: []item{{Type: "agentMessage", Phase: "final_answer", Text: "one"}}},
+		{ID: "active", Status: "inProgress", Items: []item{{Type: "agentMessage", Phase: "commentary", Text: "working"}}},
+		{ID: "two", Status: "completed", Items: []item{
+			{Type: "agentMessage", Phase: "final_answer", Text: "superseded"},
+			{Type: "agentMessage", Phase: "final_answer", Text: "two"},
+		}},
+	}}
+
+	responses, err := selectFinalResponses(value, agents.Session{Agent: "codex", Value: "session-1"})
+	if err != nil {
+		t.Fatalf("selectFinalResponses() error = %v", err)
+	}
+	if len(responses) != 2 || responses[0].TurnID != "one" || responses[1].TurnID != "two" {
+		t.Fatalf("response history = %#v", responses)
+	}
+	if responses[1].Markdown != "two" {
+		t.Fatalf("newest Markdown = %q", responses[1].Markdown)
+	}
+}
+
 func TestSelectLatestFinalReturnsNotFound(t *testing.T) {
 	value := thread{Turns: []turn{{
 		ID:     "turn-active",

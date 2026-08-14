@@ -24,6 +24,55 @@ func TestReaderRendersHeaderAndMarkdown(t *testing.T) {
 	}
 }
 
+func TestHistoryStartsNewestAndNavigatesWithArrowKeys(t *testing.T) {
+	model := NewHistory([]agents.FinalResponse{
+		{Agent: "codex", TurnID: "turn-1", Markdown: "first response"},
+		{Agent: "codex", TurnID: "turn-2", Markdown: "second response"},
+		{Agent: "codex", TurnID: "turn-3", Markdown: "third response"},
+	}, nil)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	model = updated.(Model)
+
+	if model.responseIndex != 2 || model.markdown != "third response" || model.responsePosition() != "3/3" {
+		t.Fatalf("initial history state = index %d, markdown %q, position %q", model.responseIndex, model.markdown, model.responsePosition())
+	}
+	if view := ansi.Strip(model.View().Content); !strings.Contains(view, "3/3") {
+		t.Fatalf("View() does not show history position: %q", view)
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	model = updated.(Model)
+	if model.responseIndex != 1 || model.markdown != "second response" || model.responsePosition() != "2/3" {
+		t.Fatalf("older history state = index %d, markdown %q, position %q", model.responseIndex, model.markdown, model.responsePosition())
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	model = updated.(Model)
+	if model.responseIndex != 2 || model.markdown != "third response" {
+		t.Fatalf("newer history state = index %d, markdown %q", model.responseIndex, model.markdown)
+	}
+}
+
+func TestHistoryNavigationStopsAtBoundsAndCopiesSelectedResponse(t *testing.T) {
+	model := NewHistory([]agents.FinalResponse{
+		{Agent: "codex", TurnID: "turn-1", Markdown: "first"},
+		{Agent: "codex", TurnID: "turn-2", Markdown: "second"},
+	}, nil)
+
+	updated, _ := model.Update(tea.KeyPressMsg{Code: '[', Text: "["})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: '[', Text: "["})
+	model = updated.(Model)
+	if model.responseIndex != 0 || model.markdown != "first" {
+		t.Fatalf("oldest history state = index %d, markdown %q", model.responseIndex, model.markdown)
+	}
+
+	_, command := model.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	if command == nil || fmt.Sprint(command()) != "first" {
+		t.Fatal("copy did not use the selected historical response")
+	}
+}
+
 func TestHeadingsRenderWithoutMarkdownMarkers(t *testing.T) {
 	model := New("# Primary\n\n## Secondary\n\n### Tertiary\n\n#### Fourth", "codex")
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
@@ -246,6 +295,55 @@ func TestNewLiveResponseReplacesDocumentAndResetsReaderState(t *testing.T) {
 	}
 	if model.liveLabel() != "UPDATED" {
 		t.Fatalf("live label = %q, want UPDATED", model.liveLabel())
+	}
+}
+
+func TestNewLiveResponseAppendsWithoutLeavingSelectedHistory(t *testing.T) {
+	live := &LiveUpdates{Context: context.Background(), Events: make(chan agents.StatusEvent)}
+	model := NewHistory([]agents.FinalResponse{
+		{Agent: "codex", TurnID: "turn-1", Markdown: "first"},
+		{Agent: "codex", TurnID: "turn-2", Markdown: "second"},
+	}, live)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	model = updated.(Model)
+
+	updated, _ = model.Update(refreshResultMsg{response: agents.FinalResponse{
+		Agent: "codex", TurnID: "turn-3", Markdown: "third",
+	}})
+	model = updated.(Model)
+
+	if len(model.responses) != 3 || model.turnID != "turn-3" {
+		t.Fatalf("history = %d responses, latest turn %q", len(model.responses), model.turnID)
+	}
+	if model.responseIndex != 0 || model.markdown != "first" || model.responsePosition() != "1/3" {
+		t.Fatalf("selected history state = index %d, markdown %q, position %q", model.responseIndex, model.markdown, model.responsePosition())
+	}
+	if model.liveLabel() != "NEW RESPONSE" {
+		t.Fatalf("live label = %q, want NEW RESPONSE", model.liveLabel())
+	}
+
+	updated, _ = model.Update(tea.KeyPressMsg{Code: ']', Text: "]"})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: ']', Text: "]"})
+	model = updated.(Model)
+	if model.responseIndex != 2 || model.markdown != "third" {
+		t.Fatalf("new response state = index %d, markdown %q", model.responseIndex, model.markdown)
+	}
+}
+
+func TestHistorySanitizesEveryResponseBeforeNavigation(t *testing.T) {
+	model := NewHistory([]agents.FinalResponse{
+		{Agent: "codex", TurnID: "turn-1", Markdown: "unsafe &#27;]52;c;c2VjcmV0&#7;"},
+		{Agent: "codex", TurnID: "turn-2", Markdown: "safe"},
+	}, nil)
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	model = updated.(Model)
+
+	assertNoUnsafeTerminalControls(t, model.markdown)
+	if strings.Contains(model.markdown, "\x1b]52;") {
+		t.Fatal("historical response retained an OSC 52 sequence")
 	}
 }
 

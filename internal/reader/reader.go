@@ -36,19 +36,21 @@ type LiveUpdates struct {
 }
 
 type Model struct {
-	agent      string
-	connected  bool
-	copied     bool
-	height     int
-	live       *LiveUpdates
-	markdown   string
-	notice     string
-	refreshing bool
-	rendered   string
-	turnID     string
-	viewport   viewport.Model
-	width      int
-	working    bool
+	agent         string
+	connected     bool
+	copied        bool
+	height        int
+	live          *LiveUpdates
+	markdown      string
+	notice        string
+	refreshing    bool
+	rendered      string
+	responseIndex int
+	responses     []agents.FinalResponse
+	turnID        string
+	viewport      viewport.Model
+	width         int
+	working       bool
 }
 
 type statusEventMsg struct {
@@ -69,12 +71,27 @@ func New(markdown, agent string) Model {
 // NewLive creates a reader that can follow lifecycle events from its source
 // agent while remaining fully usable if the live stream is unavailable.
 func NewLive(response agents.FinalResponse, live *LiveUpdates) Model {
-	model := Model{
-		agent:    strings.ToUpper(sanitizeTerminalText(response.Agent)),
-		markdown: sanitizeTerminalText(response.Markdown),
-		turnID:   response.TurnID,
-		viewport: viewport.New(viewport.WithWidth(80), viewport.WithHeight(20)),
+	return NewHistory([]agents.FinalResponse{response}, live)
+}
+
+// NewHistory creates a reader over a session's completed responses. The newest
+// response is selected initially and older responses remain locally browsable.
+func NewHistory(responses []agents.FinalResponse, live *LiveUpdates) Model {
+	if len(responses) == 0 {
+		responses = []agents.FinalResponse{{}}
 	}
+	sanitized := make([]agents.FinalResponse, len(responses))
+	for index, response := range responses {
+		sanitized[index] = sanitizeResponse(response)
+	}
+	latest := len(sanitized) - 1
+	model := Model{
+		responseIndex: latest,
+		responses:     sanitized,
+		turnID:        sanitized[latest].TurnID,
+		viewport:      viewport.New(viewport.WithWidth(80), viewport.WithHeight(20)),
+	}
+	model.selectResponse(latest)
 	model.live = live
 	if live != nil {
 		model.connected = live.ConnectionError == nil && live.Events != nil
@@ -136,17 +153,11 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "REFRESH FAILED · PRESS r"
 			return m, nil
 		}
-		if message.response.TurnID == m.turnID || message.response.Markdown == "" {
+		if message.response.Markdown == "" || message.response.TurnID != "" && message.response.TurnID == m.turnID {
 			m.notice = ""
 			return m, nil
 		}
-		m.agent = strings.ToUpper(sanitizeTerminalText(message.response.Agent))
-		m.markdown = sanitizeTerminalText(message.response.Markdown)
-		m.turnID = message.response.TurnID
-		m.copied = false
-		m.notice = "UPDATED"
-		m.resize()
-		m.viewport.GotoTop()
+		m.appendResponse(message.response)
 		return m, nil
 	case tea.KeyPressMsg:
 		switch message.String() {
@@ -162,6 +173,12 @@ func (m Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshing = true
 			m.notice = ""
 			return m, refreshDocument(m.live, m.turnID)
+		case "left", "[":
+			m.navigateHistory(-1)
+			return m, nil
+		case "right", "]":
+			m.navigateHistory(1)
+			return m, nil
 		case "j", "down":
 			m.viewport.ScrollDown(1)
 			return m, nil
@@ -207,7 +224,10 @@ func (m Model) View() tea.View {
 		Padding(0, 1).
 		Width(m.width)
 	headerLeft := fmt.Sprintf("FINAL RESPONSE  ·  %s", m.agent)
-	headerRight := m.liveLabel()
+	headerRight := m.responsePosition()
+	if live := m.liveLabel(); live != "" {
+		headerRight += "  ·  " + live
+	}
 	if headerRight != "" && lipgloss.Width(headerLeft)+lipgloss.Width(headerRight)+3 <= m.width {
 		headerLeft += strings.Repeat(" ", m.width-lipgloss.Width(headerLeft)-lipgloss.Width(headerRight)-2) + headerRight
 	}
@@ -230,8 +250,9 @@ func (m Model) View() tea.View {
 		right = ""
 	}
 	for _, hint := range []string{
-		"↑/↓ scroll  ·  r refresh  ·  Esc close",
-		"j/k  ·  r refresh  ·  Esc close",
+		"←/→ history  ·  ↑/↓ scroll  ·  r refresh  ·  Esc close",
+		"←/→ history  ·  j/k scroll  ·  Esc close",
+		"[/] history  ·  Esc close",
 		"Esc close",
 	} {
 		if lipgloss.Width(left)+2+lipgloss.Width(hint)+lipgloss.Width(right) <= m.width {
@@ -251,6 +272,66 @@ func (m Model) View() tea.View {
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
+}
+
+func (m Model) responsePosition() string {
+	return fmt.Sprintf("%d/%d", m.responseIndex+1, len(m.responses))
+}
+
+func (m *Model) navigateHistory(delta int) {
+	next := m.responseIndex + delta
+	if next < 0 || next >= len(m.responses) {
+		return
+	}
+	m.selectResponse(next)
+	m.notice = ""
+	m.copied = false
+	m.resize()
+	m.viewport.GotoTop()
+}
+
+func (m *Model) appendResponse(response agents.FinalResponse) {
+	response = sanitizeResponse(response)
+	wasLatest := m.responseIndex == len(m.responses)-1
+
+	// An initial read error has no turn ID. Replace that temporary document
+	// when the first real completed response arrives instead of preserving it
+	// as session history.
+	if len(m.responses) == 1 && m.responses[0].TurnID == "" && m.live != nil {
+		m.responses[0] = response
+		m.turnID = response.TurnID
+		m.selectResponse(0)
+		m.notice = "UPDATED"
+		m.copied = false
+		m.resize()
+		m.viewport.GotoTop()
+		return
+	}
+
+	m.responses = append(m.responses, response)
+	m.turnID = response.TurnID
+	if wasLatest {
+		m.selectResponse(len(m.responses) - 1)
+		m.notice = "UPDATED"
+		m.copied = false
+		m.resize()
+		m.viewport.GotoTop()
+		return
+	}
+	m.notice = "NEW RESPONSE"
+}
+
+func (m *Model) selectResponse(index int) {
+	m.responseIndex = index
+	response := m.responses[index]
+	m.agent = strings.ToUpper(response.Agent)
+	m.markdown = response.Markdown
+}
+
+func sanitizeResponse(response agents.FinalResponse) agents.FinalResponse {
+	response.Agent = sanitizeTerminalText(response.Agent)
+	response.Markdown = sanitizeTerminalText(response.Markdown)
+	return response
 }
 
 func (m Model) liveLabel() string {
@@ -450,5 +531,11 @@ func Run(markdown, agent string) error {
 // RunLive blocks until the user closes a lifecycle-aware reader.
 func RunLive(response agents.FinalResponse, live LiveUpdates) error {
 	_, err := tea.NewProgram(NewLive(response, &live)).Run()
+	return err
+}
+
+// RunHistory blocks until the user closes a lifecycle-aware history reader.
+func RunHistory(responses []agents.FinalResponse, live LiveUpdates) error {
+	_, err := tea.NewProgram(NewHistory(responses, &live)).Run()
 	return err
 }

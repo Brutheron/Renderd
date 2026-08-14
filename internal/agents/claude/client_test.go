@@ -85,6 +85,28 @@ func TestLatestFinalChoosesNewestCompletedTurn(t *testing.T) {
 	}
 }
 
+func TestFinalResponsesReturnsCompletedTurnsInOrder(t *testing.T) {
+	path := transcript(t, olderFinal, userPrompt, thinkingRecord, finalRecord)
+
+	responses, err := Client{}.FinalResponses(context.Background(), agents.Session{
+		Agent: "claude",
+		Kind:  "path",
+		Value: path,
+	})
+	if err != nil {
+		t.Fatalf("FinalResponses() error = %v", err)
+	}
+	if len(responses) != 2 {
+		t.Fatalf("len(responses) = %d, want 2", len(responses))
+	}
+	if responses[0].TurnID != "req-old" || responses[0].Markdown != "Older answer." {
+		t.Fatalf("older response = %#v", responses[0])
+	}
+	if responses[1].TurnID != "req-final" || responses[1].Markdown != "# Done\n\nThe answer." {
+		t.Fatalf("newer response = %#v", responses[1])
+	}
+}
+
 // A turn in flight must not blank the reader: the previous answer stays until
 // the running turn completes.
 func TestLatestFinalKeepsPreviousAnswerWhileTurnRuns(t *testing.T) {

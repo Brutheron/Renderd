@@ -11,8 +11,8 @@ type stubAdapter struct {
 	markdown string
 }
 
-func (s stubAdapter) LatestFinal(context.Context, Session) (FinalResponse, error) {
-	return FinalResponse{Markdown: s.markdown}, nil
+func (s stubAdapter) FinalResponses(context.Context, Session) ([]FinalResponse, error) {
+	return []FinalResponse{{Markdown: s.markdown}}, nil
 }
 
 func TestRegistryDispatchesToTheSessionAgent(t *testing.T) {
@@ -28,6 +28,24 @@ func TestRegistryDispatchesToTheSessionAgent(t *testing.T) {
 	if response.Markdown != "claude answer" {
 		t.Fatalf("Markdown = %q", response.Markdown)
 	}
+}
+
+func TestRegistryReturnsSessionHistory(t *testing.T) {
+	registry := Registry{"codex": stubHistoryAdapter{}}
+
+	responses, err := registry.FinalResponses(context.Background(), Session{Agent: "codex", Value: "session-1"})
+	if err != nil {
+		t.Fatalf("FinalResponses() error = %v", err)
+	}
+	if got := []string{responses[0].Markdown, responses[1].Markdown}; !slices.Equal(got, []string{"one", "two"}) {
+		t.Fatalf("Markdown history = %q", got)
+	}
+}
+
+type stubHistoryAdapter struct{}
+
+func (stubHistoryAdapter) FinalResponses(context.Context, Session) ([]FinalResponse, error) {
+	return []FinalResponse{{Markdown: "one"}, {Markdown: "two"}}, nil
 }
 
 func TestRegistryReportsUnsupportedAgents(t *testing.T) {

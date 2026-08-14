@@ -10,12 +10,12 @@ command = ["sh", "scripts/build.sh"]
 
 [[actions]]
 id = "open"
-title = "Open latest final response"
+title = "Open response history"
 contexts = ["pane"]
 command = ["bin/renderd", "open"]
 
 [[panes]]
 id = "reader"
-title = "Final response"
+title = "Response history"
 placement = "split"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/renderd\" reader"]

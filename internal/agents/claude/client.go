@@ -82,24 +82,33 @@ type group struct {
 	turnID    string
 }
 
-// LatestFinal implements agents.Adapter for Claude Code sessions.
-func (c Client) LatestFinal(ctx context.Context, session agents.Session) (agents.FinalResponse, error) {
+// FinalResponses implements agents.Adapter for Claude Code sessions.
+func (c Client) FinalResponses(ctx context.Context, session agents.Session) ([]agents.FinalResponse, error) {
 	if session.Agent != "claude" || session.Value == "" {
-		return agents.FinalResponse{}, errors.New("invalid Claude session")
+		return nil, errors.New("invalid Claude session")
 	}
 
 	path, err := c.transcriptPath(session)
 	if err != nil {
-		return agents.FinalResponse{}, err
+		return nil, err
 	}
 
 	file, err := os.Open(path)
 	if err != nil {
-		return agents.FinalResponse{}, fmt.Errorf("open Claude transcript: %w", err)
+		return nil, fmt.Errorf("open Claude transcript: %w", err)
 	}
 	defer file.Close()
 
-	return selectLatestFinal(ctx, file, session)
+	return selectFinalResponses(ctx, file, session)
+}
+
+// LatestFinal keeps the direct client API convenient for live diagnostics.
+func (c Client) LatestFinal(ctx context.Context, session agents.Session) (agents.FinalResponse, error) {
+	responses, err := c.FinalResponses(ctx, session)
+	if err != nil {
+		return agents.FinalResponse{}, err
+	}
+	return responses[len(responses)-1], nil
 }
 
 // transcriptPath resolves the session reference Herdr reported for the pane.
@@ -167,47 +176,63 @@ func newestFile(paths []string) string {
 	return newest
 }
 
-// selectLatestFinal streams the transcript and keeps the last completed turn.
-// Reading forward costs one pass and holds only one line at a time, which
-// matters because transcripts grow past a thousand records.
+// selectLatestFinal streams the transcript and returns its newest completed
+// turn while retaining the same selection behavior as FinalResponses.
 func selectLatestFinal(ctx context.Context, source io.Reader, session agents.Session) (agents.FinalResponse, error) {
+	responses, err := selectFinalResponses(ctx, source, session)
+	if err != nil {
+		return agents.FinalResponse{}, err
+	}
+	return responses[len(responses)-1], nil
+}
+
+func selectFinalResponses(ctx context.Context, source io.Reader, session agents.Session) ([]agents.FinalResponse, error) {
 	reader := bufio.NewReader(source)
-	var latest group
+	var groups []group
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return agents.FinalResponse{}, err
+			return nil, err
 		}
 
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			if completed, ok := decodeFinalEntry(line); ok {
-				latest = latest.add(completed)
+				if len(groups) == 0 || groups[len(groups)-1].key != completed.key {
+					groups = append(groups, group{key: completed.key, turnID: completed.turnID})
+				}
+				groups[len(groups)-1] = groups[len(groups)-1].add(completed)
 			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				break
 			}
-			return agents.FinalResponse{}, fmt.Errorf("read Claude transcript: %w", readErr)
+			return nil, fmt.Errorf("read Claude transcript: %w", readErr)
 		}
 	}
 
-	if len(latest.texts) == 0 {
-		return agents.FinalResponse{}, agents.ErrNoFinalResponse
+	responses := make([]agents.FinalResponse, 0, len(groups))
+	for _, completed := range groups {
+		if len(completed.texts) == 0 {
+			continue
+		}
+		sessionID := completed.sessionID
+		if sessionID == "" {
+			sessionID = session.Value
+		}
+		responses = append(responses, agents.FinalResponse{
+			Agent:       "claude",
+			CompletedAt: completed.timestamp,
+			Markdown:    strings.Join(completed.texts, "\n\n"),
+			SessionID:   sessionID,
+			TurnID:      completed.turnID,
+		})
 	}
-
-	sessionID := latest.sessionID
-	if sessionID == "" {
-		sessionID = session.Value
+	if len(responses) == 0 {
+		return nil, agents.ErrNoFinalResponse
 	}
-	return agents.FinalResponse{
-		Agent:       "claude",
-		CompletedAt: latest.timestamp,
-		Markdown:    strings.Join(latest.texts, "\n\n"),
-		SessionID:   sessionID,
-		TurnID:      latest.turnID,
-	}, nil
+	return responses, nil
 }
 
 // add starts a new turn when the request ID changes, so the accumulated text
