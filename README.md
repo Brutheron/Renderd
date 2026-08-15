@@ -5,6 +5,14 @@ responses inside [Herdr](https://herdr.dev/). It opens session history in a
 focused, scrollable side panel and follows new responses without interfering
 with the agent's terminal session.
 
+## Install
+
+```sh
+herdr plugin install Brutheron/Renderd
+```
+
+Complete the one-time agent integration and keybinding setup below.
+
 ## How it works
 
 1. Focus a Herdr pane running Claude Code or Codex.
@@ -66,20 +74,13 @@ register it by the name Herdr reports for the agent in the registry in
 `cmd/renderd/main.go`. Herdr must be able to report a session reference for that
 agent — check `herdr integration status`.
 
-## Installation
+## Setup
 
 Requirements:
 
 - Go 1.25 or newer
 - Herdr 0.8.0 or newer
 - Claude Code and/or the Codex CLI with App Server support
-
-Build and link the local plugin:
-
-```sh
-sh scripts/build.sh
-herdr plugin link .
-```
 
 Install the Herdr session integration for each agent you use. You only need the
 integration for your chosen agent, though installing both is supported. Without
@@ -139,5 +140,12 @@ are available for non-default installations and development:
   the Codex CLI selected by `RENDERD_CODEX_BIN` or `PATH`.
 
 ## Development
+
+Build and link your local checkout:
+
+```sh
+sh scripts/build.sh
+herdr plugin link .
+```
 
 Run the test suite with `go test ./...`.
